@@ -279,15 +279,11 @@ async def check_database_health() -> dict[str, Any]:
                 "status": "healthy",
                 "total_reports": report_count,
                 "completed_reports": completed_count,
-                "database_path": str(DATABASE_PATH),
             }
     except Exception as e:
+        # /health is public: the details go to the log, not the response.
         log.error(f"Database health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "error": str(e),
-            "database_path": str(DATABASE_PATH),
-        }
+        return {"status": "unhealthy"}
 
 
 def cleanup_connections() -> None:
@@ -666,15 +662,11 @@ async def get_scan_stats() -> dict:
         )
         dist = {row["indicator"]: row["cnt"] for row in await cursor.fetchall()}
 
-        # Recent scans
-        cursor = await db.execute(
-            "SELECT * FROM scan_log ORDER BY created_at DESC LIMIT 50"
-        )
-        recent = [dict(row) for row in await cursor.fetchall()]
-
+        # Aggregates only. The rows themselves (text excerpts and the URLs the
+        # extension scanned) stay private: the endpoint is public, and a list
+        # of recent rows would show what other people read.
         return {
             "total_scans": total,
             "by_type": by_type,
             "score_distribution": dist,
-            "recent": recent,
         }

@@ -249,3 +249,33 @@ def test_report_hides_unknown_language(client):
 
     assert response.status_code == 200
     assert "Language:" not in response.text
+
+
+def test_scan_stats_shows_no_texts_or_urls(client):
+    """The endpoint is public: aggregates only, never the scanned texts or URLs."""
+    from app.database import log_scan_sync
+
+    log_scan_sync(
+        scan_type="url",
+        text_excerpt="a private page someone read",
+        text_hash="c" * 64,
+        chars=27,
+        score=50.0,
+        indicator="yellow",
+        confidence="low",
+        bert=0.5,
+        e5=0.5,
+        tmr=0.5,
+        fakespot=0.5,
+        source_url="https://private.example/page",
+    )
+    r = client.get("/api/scan/stats")
+    assert r.status_code == 200
+    assert "recent" not in r.json()
+    assert "private" not in r.text
+
+
+def test_health_does_not_show_the_database_path(client):
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert "database_path" not in r.json()["database"]

@@ -16,6 +16,8 @@ class EndpointCapacity:
     queue_size: int = 0
     # Rolling window of recent latencies (seconds) for wait-time estimation
     _latencies: deque = field(default_factory=lambda: deque(maxlen=20))
+    # monotonic start times of the jobs holding a slot right now
+    _starts: list = field(default_factory=list)
 
     def has_capacity(self) -> bool:
         return self.active < self.max_concurrent
@@ -31,10 +33,33 @@ class EndpointCapacity:
             return 500.0  # default estimate
         return (sum(self._latencies) / len(self._latencies)) * 1000
 
-    def estimated_wait_ms(self, position: int) -> int:
-        """Estimate wait time for a request at *position* in the queue."""
-        batches = max(1, position / max(self.max_concurrent, 1))
-        return int(batches * self.avg_latency_ms())
+    def job_started(self, start: float) -> None:
+        self._starts.append(start)
+
+    def job_finished(self, start: float) -> None:
+        if start in self._starts:
+            self._starts.remove(start)
+
+    def estimated_wait_ms(self, position: int, now: float | None = None) -> int:
+        """Estimate wait time for a request at *position* in the queue.
+
+        With the running jobs' start times known, the wait is the time until
+        the slot this request needs frees up: the jobs that have run longest
+        free theirs first. A job past the average is given a quarter of it
+        rather than none, so the estimate never reads 0 while it is still busy.
+        """
+        avg = self.avg_latency_ms()
+        slots = max(self.max_concurrent, 1)
+        if now is None or not self._starts:
+            batches = max(1, position / slots)
+            return int(batches * avg)
+        remaining = sorted(
+            max(avg - (now - start) * 1000, 0.25 * avg) for start in self._starts
+        )
+        index = max(position, 1) - 1
+        rounds, slot = divmod(index, slots)
+        first = remaining[slot] if slot < len(remaining) else 0.0
+        return int(first + rounds * avg)
 
     def status_dict(self) -> dict:
         return {

@@ -164,7 +164,9 @@ class QueueManager:
                     "status": "queued",
                     "ticket_id": existing_ticket,
                     "position": position,
-                    "estimated_wait_ms": cap.estimated_wait_ms(position),
+                    "estimated_wait_ms": cap.estimated_wait_ms(
+                        position, time.monotonic()
+                    ),
                 }
             # Also check results store
             if existing_ticket in self._results:
@@ -180,6 +182,7 @@ class QueueManager:
             await slots.acquire()
             cap.active += 1
             start = time.monotonic()
+            cap.job_started(start)
             try:
                 result = await execute_fn(payload)
             except Exception as e:
@@ -211,7 +214,7 @@ class QueueManager:
                 "position": position,
                 "ahead": position - 1,
                 "active": cap.active,
-                "estimated_wait_ms": cap.estimated_wait_ms(position),
+                "estimated_wait_ms": cap.estimated_wait_ms(position, time.monotonic()),
             }
 
         # --- Queue full: reject ---
@@ -248,7 +251,9 @@ class QueueManager:
                         "position": position,
                         "ahead": position - 1,
                         "active": cap.active,
-                        "estimated_wait_ms": cap.estimated_wait_ms(position),
+                        "estimated_wait_ms": cap.estimated_wait_ms(
+                            position, time.monotonic()
+                        ),
                     }
             return {"status": "processing"}
 
@@ -280,6 +285,7 @@ class QueueManager:
     def _release(self, endpoint: str, start: float) -> None:
         cap = self._capacities[endpoint]
         cap.active = max(0, cap.active - 1)
+        cap.job_finished(start)
         cap.record_latency(time.monotonic() - start)
         self._slots[endpoint].release()
 

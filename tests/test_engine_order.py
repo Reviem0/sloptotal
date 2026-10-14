@@ -101,3 +101,14 @@ def test_the_stream_says_when_the_score_is_final(monkeypatch):
     assert {key for key, _, _ in events[: first_final + 1]} >= scoring
     assert all(final for _, _, final in events[first_final:])
     assert len({score for _, score, _ in events[first_final:]}) == 1
+
+
+def test_the_slowest_model_starts_first_within_its_group():
+    from app.analyzer import _ENGINE_COST
+
+    order = [key for key, _ in engine_order(AI_TEXT)]
+    scoring = scoring_engines(AI_TEXT)
+    weighted_models = [k for k in order if k in scoring and k not in _CHEAP_ENGINES]
+    costs = [_ENGINE_COST.get(k, 1) for k in weighted_models]
+    assert costs == sorted(costs, reverse=True)
+    assert weighted_models[0] == "classifier_desklib"

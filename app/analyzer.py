@@ -164,17 +164,34 @@ _CHEAP_ENGINES = frozenset(
 )
 
 
+# Rough relative CPU cost of the model engines, slowest first within a tier,
+# so the longest job starts first and the tier ends as early as it can.
+_ENGINE_COST = {
+    "classifier_desklib": 5,
+    "classifier_superannotate": 4,
+    "classifier_remodetect": 4,
+    "binoculars": 3,
+    "fast_detectgpt": 3,
+    "classifier_tmr": 2,
+    "classifier_fakespot": 2,
+    "classifier_openai": 2,
+    "classifier_chatgpt": 2,
+    "perplexity": 2,
+    "cross_perplexity": 2,
+}
+
+
 def engine_order(text: str) -> list[tuple[str, object]]:
     """_engines in the order they are queued: the cheap ones, then the models
-    the overall score depends on for this text, then the rest. The executors
-    are FIFO, so this decides when the score is final, not only when it shows."""
+    the overall score depends on for this text, then the rest, the slowest
+    first within each group. The executors are FIFO, so this decides when the
+    score is final, not only when it shows."""
     scoring = scoring_engines(text)
 
-    def rank(item: tuple[str, object]) -> int:
+    def rank(item: tuple[str, object]) -> tuple[int, int]:
         key = item[0]
-        if key in _CHEAP_ENGINES:
-            return 0
-        return 1 if key in scoring else 2
+        tier = 0 if key in _CHEAP_ENGINES else 1 if key in scoring else 2
+        return tier, -_ENGINE_COST.get(key, 1)
 
     return sorted(_engines, key=rank)
 
@@ -200,6 +217,9 @@ _short_executor = ThreadPoolExecutor(
     thread_name_prefix="short",
 )
 _executors = {"full": _full_executor, "short": _short_executor}
+# The cheap engines get their own threads, so the first results of a report
+# show at once even while other analyses fill the model lanes.
+_cheap_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cheap")
 
 # --- HTTP-level concurrency guards (Phase 4) ---
 _max_full = int(os.getenv("SLOPTOTAL_MAX_CONCURRENT_FULL", "2"))
@@ -222,6 +242,7 @@ def shutdown_analyzer() -> None:
     _snippet_executor.shutdown(wait=True, cancel_futures=False)
     _full_executor.shutdown(wait=True, cancel_futures=False)
     _short_executor.shutdown(wait=True, cancel_futures=False)
+    _cheap_executor.shutdown(wait=True, cancel_futures=False)
     cleanup_connections()
     log.info("Analyzer shutdown complete")
 
@@ -352,7 +373,8 @@ async def start_analysis(
 
     loop = asyncio.get_event_loop()
     for key, engine in engine_order(text):
-        future = loop.run_in_executor(_executors[lane], _run_engine, engine, text)
+        executor = _cheap_executor if key in _CHEAP_ENGINES else _executors[lane]
+        future = loop.run_in_executor(executor, _run_engine, engine, text)
         future.add_done_callback(
             lambda f, k=key, q=queue, rid=report_id: _on_engine_done(f, k, q, rid)
         )

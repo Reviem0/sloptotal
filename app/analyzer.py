@@ -6,7 +6,12 @@ from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 
 from app.cache import compute_text_hash, is_cacheable_report
-from app.calibration import CALIBRATION_VERSION, calibrated_score, quick_score
+from app.calibration import (
+    CALIBRATION_VERSION,
+    calibrated_score,
+    quick_score,
+    scoring_engines,
+)
 from app.config import (
     CACHE_ENABLED,
     MAX_ANALYSED_CHARS,
@@ -71,6 +76,9 @@ _result_counts: dict[str, int] = {}
 
 # report_id -> set once every engine has reported (see _finish_analysis)
 _done_events: dict[str, asyncio.Event] = {}
+
+# report_id -> engines still to report before the overall score is final
+_scoring_left: dict[str, set[str]] = {}
 
 # Lock for pending dict modifications
 _pending_lock = asyncio.Lock()
@@ -148,6 +156,28 @@ _engines = [
     ("readability", _readability_engine),
     ("sentiment", _sentiment_engine),
 ]
+
+# Regex and counting engines: they finish in milliseconds, so they go first and
+# the report shows activity at once instead of waiting behind the models.
+_CHEAP_ENGINES = frozenset(
+    {"linguistic", "structural", "vocabulary", "formulaic", "readability", "sentiment"}
+)
+
+
+def engine_order(text: str) -> list[tuple[str, object]]:
+    """_engines in the order they are queued: the cheap ones, then the models
+    the overall score depends on for this text, then the rest. The executors
+    are FIFO, so this decides when the score is final, not only when it shows."""
+    scoring = scoring_engines(text)
+
+    def rank(item: tuple[str, object]) -> int:
+        key = item[0]
+        if key in _CHEAP_ENGINES:
+            return 0
+        return 1 if key in scoring else 2
+
+    return sorted(_engines, key=rank)
+
 
 # --- CPU-aware executor splitting (Phase 2) ---
 _cpu_count = os.cpu_count() or 6
@@ -316,12 +346,12 @@ async def start_analysis(
         _pending[report_id] = queue
         _result_counts[report_id] = 0
         _done_events[report_id] = asyncio.Event()
+        _scoring_left[report_id] = set(scoring_engines(text))
 
     log.info(f"Starting analysis {report_id} ({word_count} words)")
 
-    # Launch all engines using full executor
     loop = asyncio.get_event_loop()
-    for key, engine in _engines:
+    for key, engine in engine_order(text):
         future = loop.run_in_executor(_executors[lane], _run_engine, engine, text)
         future.add_done_callback(
             lambda f, k=key, q=queue, rid=report_id: _on_engine_done(f, k, q, rid)
@@ -365,9 +395,14 @@ def _on_engine_done(future, key: str, queue: asyncio.Queue, report_id: str):
     except Exception as e:
         log.error(f"Failed to update report score: {e}")
 
+    left = _scoring_left.get(report_id)
+    if left is not None:
+        left.discard(key)
+    score_final = not left
+
     # Push to queue (thread-safe)
     try:
-        queue.put_nowait((key, result))
+        queue.put_nowait((key, result, score_final))
     except Exception:
         pass
 
@@ -386,6 +421,7 @@ async def _finish_analysis(report_id: str) -> None:
     async with _pending_lock:
         _pending.pop(report_id, None)
         _result_counts.pop(report_id, None)
+        _scoring_left.pop(report_id, None)
         done = _done_events.pop(report_id, None)
 
     async with _inflight_full_lock:
@@ -460,8 +496,11 @@ def _update_report_score_sync(report_id: str):
 
 async def stream_results(
     report_id: str,
-) -> AsyncGenerator[tuple[str, EngineResult, AnalysisReport], None]:
-    """Yield (key, result, updated_report) as each engine completes."""
+) -> AsyncGenerator[tuple[str, EngineResult, AnalysisReport, bool], None]:
+    """Yield (key, result, updated_report, score_final) as each engine completes.
+
+    score_final turns true once every engine the overall score depends on has
+    reported; the remaining engines no longer move it."""
     async with _pending_lock:
         queue = _pending.get(report_id)
 
@@ -472,11 +511,11 @@ async def stream_results(
     total = len(_engines)
     while received < total:
         try:
-            key, result = await asyncio.wait_for(queue.get(), timeout=300)
+            key, result, score_final = await asyncio.wait_for(queue.get(), timeout=300)
             received += 1
             report = await db_get_report(report_id)
             if report:
-                yield key, result, report
+                yield key, result, report, score_final
         except asyncio.TimeoutError:
             log.warning(f"Timeout waiting for engine results on {report_id}")
             break

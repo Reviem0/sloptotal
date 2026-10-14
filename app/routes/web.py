@@ -271,7 +271,9 @@ async def sse_stream(report_id: str):
     async def event_generator():
         has_stream = False
         try:
-            async for key, result, updated_report in stream_results(report_id):
+            async for key, result, updated_report, score_final in stream_results(
+                report_id
+            ):
                 has_stream = True
                 data = json.dumps(
                     {
@@ -286,6 +288,7 @@ async def sse_stream(report_id: str):
                         "engines_flagged": updated_report.engines_flagged,
                         "engines_total": updated_report.engines_total,
                         "engines_done": len(updated_report.engine_results),
+                        "score_final": score_final,
                     }
                 )
                 yield f"data: {data}\n\n"
@@ -313,6 +316,7 @@ async def sse_stream(report_id: str):
                         "engines_flagged": report.engines_flagged,
                         "engines_total": report.engines_total,
                         "engines_done": len(report.engine_results),
+                        "score_final": True,
                     }
                 )
                 yield f"data: {data}\n\n"

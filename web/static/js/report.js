@@ -113,7 +113,14 @@
             return;
         }
         setRow(msg.key, msg.score, msg.details);
-        setScore(msg.overall_score, msg.engines_flagged, false);
+        // Until the engines the score depends on are in, any number shown
+        // would still move; show progress instead. Older servers send no
+        // score_final, so they keep the running score.
+        if (msg.score_final !== false) {
+            setScore(msg.overall_score, msg.engines_flagged, false);
+        } else {
+            document.getElementById("summary").textContent = done + " of " + total + " engines finished.";
+        }
     };
     stream.onerror = function () {
         stream.close();

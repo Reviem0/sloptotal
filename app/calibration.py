@@ -53,6 +53,17 @@ def _interpolate(z: float, knots: list[list[float]]) -> float:
     return knots[-1][1]
 
 
+def scoring_engines(text: str) -> frozenset[str]:
+    """The engines whose scores move calibrated_score for this text.
+
+    Every other engine has a weight of 0 in the fit, so once these have
+    reported the overall score is final.
+    """
+    section = "english" if detect_language(text) == "en" else "multilingual"
+    weights = _CALIBRATION[section]["weights"]
+    return frozenset(key for key, weight in weights.items() if weight > 0)
+
+
 def language_support(lang: str) -> str:
     """How far detection is trusted in a language: supported, experimental or unsupported."""
     if lang == "en":

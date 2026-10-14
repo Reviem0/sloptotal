@@ -373,13 +373,25 @@ async def start_analysis(
 
     loop = asyncio.get_event_loop()
     for key, engine in engine_order(text):
-        executor = _cheap_executor if key in _CHEAP_ENGINES else _executors[lane]
-        future = loop.run_in_executor(executor, _run_engine, engine, text)
+        if key in _CHEAP_ENGINES:
+            future = loop.run_in_executor(_cheap_executor, _run_engine, engine, text)
+        else:
+            future = loop.run_in_executor(
+                _executors[lane], _run_announced, engine, text, key, loop, queue
+            )
         future.add_done_callback(
             lambda f, k=key, q=queue, rid=report_id: _on_engine_done(f, k, q, rid)
         )
 
     return report_id, False
+
+
+def _run_announced(engine, text: str, key: str, loop, queue: asyncio.Queue):
+    """Run a model engine, first telling the stream it has started: under load
+    a model can wait its turn for a while, and the report shows which ones are
+    running meanwhile. A start is (key, None, False) on the queue."""
+    loop.call_soon_threadsafe(queue.put_nowait, (key, None, False))
+    return _run_engine(engine, text)
 
 
 def _on_engine_done(future, key: str, queue: asyncio.Queue, report_id: str):
@@ -518,11 +530,12 @@ def _update_report_score_sync(report_id: str):
 
 async def stream_results(
     report_id: str,
-) -> AsyncGenerator[tuple[str, EngineResult, AnalysisReport, bool], None]:
+) -> AsyncGenerator[tuple[str, EngineResult | None, AnalysisReport | None, bool], None]:
     """Yield (key, result, updated_report, score_final) as each engine completes.
 
     score_final turns true once every engine the overall score depends on has
-    reported; the remaining engines no longer move it."""
+    reported; the remaining engines no longer move it. When a model engine
+    starts, (key, None, None, False) is yielded first."""
     async with _pending_lock:
         queue = _pending.get(report_id)
 
@@ -534,6 +547,9 @@ async def stream_results(
     while received < total:
         try:
             key, result, score_final = await asyncio.wait_for(queue.get(), timeout=300)
+            if result is None:
+                yield key, None, None, False
+                continue
             received += 1
             report = await db_get_report(report_id)
             if report:

@@ -89,14 +89,19 @@ def test_the_stream_says_when_the_score_is_final(monkeypatch):
         await init_database()
         report_id, cached = await analyzer.start_analysis(AI_TEXT, lane="short")
         assert not cached
-        events = []
-        async for key, _result, report, final in analyzer.stream_results(report_id):
+        events, started = [], []
+        async for key, result, report, final in analyzer.stream_results(report_id):
+            if result is None:
+                started.append(key)
+                continue
             events.append((key, report.overall_score, final))
         await analyzer.wait_until_done(report_id)
-        return events
+        return events, started
 
-    events = asyncio.run(run())
+    events, started = asyncio.run(run())
     assert len(events) == len(fakes)
+    # every model engine says it started; the cheap ones just report
+    assert sorted(started) == sorted(k for k, _ in fakes if k not in _CHEAP_ENGINES)
     first_final = next(i for i, (_, _, final) in enumerate(events) if final)
     assert {key for key, _, _ in events[: first_final + 1]} >= scoring
     assert all(final for _, _, final in events[first_final:])

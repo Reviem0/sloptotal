@@ -122,6 +122,15 @@
             document.getElementById("summary").textContent = done + " of " + total + " engines finished.";
         }
     };
+    // Model engines announce when they start, so the rows show what is running.
+    stream.addEventListener("running", function (event) {
+        var key = JSON.parse(event.data).key;
+        var bar = document.getElementById("bar-" + key);
+        var cell = document.getElementById("score-" + key);
+        if (!bar || bar.dataset.band) return;
+        bar.dataset.running = "";
+        if (cell) cell.textContent = "Running";
+    });
     stream.onerror = function () {
         stream.close();
         loadReport().then(finish);

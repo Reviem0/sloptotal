@@ -275,6 +275,11 @@ async def sse_stream(report_id: str):
                 report_id
             ):
                 has_stream = True
+                if result is None:
+                    # A named event: clients that only listen to plain
+                    # messages ignore it.
+                    yield f"event: running\ndata: {json.dumps({'key': key})}\n\n"
+                    continue
                 data = json.dumps(
                     {
                         "key": key,

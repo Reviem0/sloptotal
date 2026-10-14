@@ -120,6 +120,11 @@
             setScore(msg.overall_score, msg.engines_flagged, false);
         } else {
             document.getElementById("summary").textContent = done + " of " + total + " engines finished.";
+            // Where the score can still land, narrowing as the engines report.
+            if (msg.score_range) {
+                document.getElementById("score-value").textContent =
+                    Math.round(msg.score_range[0]) + "\u2013" + Math.round(msg.score_range[1]);
+            }
         }
     };
     // Model engines announce when they start, so the rows show what is running.

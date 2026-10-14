@@ -10,6 +10,7 @@ from app.calibration import (
     CALIBRATION_VERSION,
     calibrated_score,
     quick_score,
+    score_range,
     scoring_engines,
 )
 from app.config import (
@@ -389,8 +390,8 @@ async def start_analysis(
 def _run_announced(engine, text: str, key: str, loop, queue: asyncio.Queue):
     """Run a model engine, first telling the stream it has started: under load
     a model can wait its turn for a while, and the report shows which ones are
-    running meanwhile. A start is (key, None, False) on the queue."""
-    loop.call_soon_threadsafe(queue.put_nowait, (key, None, False))
+    running meanwhile. A start is (key, None, False, None) on the queue."""
+    loop.call_soon_threadsafe(queue.put_nowait, (key, None, False, None))
     return _run_engine(engine, text)
 
 
@@ -424,8 +425,9 @@ def _on_engine_done(future, key: str, queue: asyncio.Queue, report_id: str):
 
     # Update result count and calculate scores
     _result_counts[report_id] = _result_counts.get(report_id, 0) + 1
+    current_range = None
     try:
-        _update_report_score_sync(report_id)
+        current_range = _update_report_score_sync(report_id)
     except Exception as e:
         log.error(f"Failed to update report score: {e}")
 
@@ -436,7 +438,7 @@ def _on_engine_done(future, key: str, queue: asyncio.Queue, report_id: str):
 
     # Push to queue (thread-safe)
     try:
-        queue.put_nowait((key, result, score_final))
+        queue.put_nowait((key, result, score_final, current_range))
     except Exception:
         pass
 
@@ -490,8 +492,10 @@ async def wait_until_done(report_id: str, timeout: float = 900) -> None:
         log.warning(f"Analysis {report_id} still running after {timeout:.0f}s")
 
 
-def _update_report_score_sync(report_id: str):
-    """Recalculate overall score from database engine results using calibration."""
+def _update_report_score_sync(report_id: str) -> tuple[float, float]:
+    """Recalculate overall score from database engine results using calibration.
+
+    Returns the range the score can still land in (see score_range)."""
     from app.database import get_sync_connection
 
     conn = get_sync_connection()
@@ -526,16 +530,27 @@ def _update_report_score_sync(report_id: str):
     update_report_score_sync(
         report_id, overall_score, overall_verdict, engines_flagged, CALIBRATION_VERSION
     )
+    return score_range(score_map, text)
 
 
 async def stream_results(
     report_id: str,
-) -> AsyncGenerator[tuple[str, EngineResult | None, AnalysisReport | None, bool], None]:
-    """Yield (key, result, updated_report, score_final) as each engine completes.
+) -> AsyncGenerator[
+    tuple[
+        str,
+        EngineResult | None,
+        AnalysisReport | None,
+        bool,
+        tuple[float, float] | None,
+    ],
+    None,
+]:
+    """Yield (key, result, updated_report, score_final, score_range) as each
+    engine completes; score_range is the (low, high) the score can still land in.
 
     score_final turns true once every engine the overall score depends on has
     reported; the remaining engines no longer move it. When a model engine
-    starts, (key, None, None, False) is yielded first."""
+    starts, (key, None, None, False, None) is yielded first."""
     async with _pending_lock:
         queue = _pending.get(report_id)
 
@@ -546,14 +561,16 @@ async def stream_results(
     total = len(_engines)
     while received < total:
         try:
-            key, result, score_final = await asyncio.wait_for(queue.get(), timeout=300)
+            key, result, score_final, current_range = await asyncio.wait_for(
+                queue.get(), timeout=300
+            )
             if result is None:
-                yield key, None, None, False
+                yield key, None, None, False, None
                 continue
             received += 1
             report = await db_get_report(report_id)
             if report:
-                yield key, result, report, score_final
+                yield key, result, report, score_final, current_range
         except asyncio.TimeoutError:
             log.warning(f"Timeout waiting for engine results on {report_id}")
             break

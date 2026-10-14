@@ -90,11 +90,11 @@ def test_the_stream_says_when_the_score_is_final(monkeypatch):
         report_id, cached = await analyzer.start_analysis(AI_TEXT, lane="short")
         assert not cached
         events, started = [], []
-        async for key, result, report, final in analyzer.stream_results(report_id):
+        async for key, result, report, final, rng in analyzer.stream_results(report_id):
             if result is None:
                 started.append(key)
                 continue
-            events.append((key, report.overall_score, final))
+            events.append((key, report.overall_score, final, rng))
         await analyzer.wait_until_done(report_id)
         return events, started
 
@@ -102,10 +102,19 @@ def test_the_stream_says_when_the_score_is_final(monkeypatch):
     assert len(events) == len(fakes)
     # every model engine says it started; the cheap ones just report
     assert sorted(started) == sorted(k for k, _ in fakes if k not in _CHEAP_ENGINES)
-    first_final = next(i for i, (_, _, final) in enumerate(events) if final)
-    assert {key for key, _, _ in events[: first_final + 1]} >= scoring
-    assert all(final for _, _, final in events[first_final:])
-    assert len({score for _, score, _ in events[first_final:]}) == 1
+    first_final = next(i for i, (_, _, final, _) in enumerate(events) if final)
+    assert {key for key, _, _, _ in events[: first_final + 1]} >= scoring
+    assert all(final for _, _, final, _ in events[first_final:])
+    assert len({score for _, score, _, _ in events[first_final:]}) == 1
+    # the range always holds the final score and only ever narrows
+    final_score = events[-1][1]
+    previous = (0.0, 100.0)
+    for _, _, _, (low, high) in events:
+        assert low - 0.05 <= final_score <= high + 0.05
+        assert low >= previous[0] - 0.05 and high <= previous[1] + 0.05
+        previous = (low, high)
+    for _, score, _, (low, high) in events[first_final:]:
+        assert low == high == score
 
 
 def test_the_slowest_model_starts_first_within_its_group():
@@ -117,3 +126,26 @@ def test_the_slowest_model_starts_first_within_its_group():
     costs = [_ENGINE_COST.get(k, 1) for k in weighted_models]
     assert costs == sorted(costs, reverse=True)
     assert weighted_models[0] == "classifier_desklib"
+
+
+@pytest.mark.parametrize("text", [AI_TEXT, HUMAN_TEXT, SPANISH])
+def test_score_range_brackets_every_possible_outcome(text):
+    """Whatever the missing scoring engines report, the score lands inside the
+    range given before they reported."""
+    from app.calibration import score_range
+
+    rng = random.Random(2)
+    scoring = sorted(scoring_engines(text))
+    for _ in range(30):
+        known = {
+            k: rng.random() for k in rng.sample(scoring, rng.randint(0, len(scoring)))
+        }
+        low, high = score_range(known, text)
+        assert low <= high
+        for _ in range(10):
+            full = {**known, **{k: rng.random() for k in scoring if k not in known}}
+            score, _, _ = calibrated_score(full, text)
+            assert low - 1e-9 <= score <= high + 1e-9
+    everything = {k: rng.random() for k in scoring}
+    low, high = score_range(everything, text)
+    assert low == high == calibrated_score(everything, text)[0]

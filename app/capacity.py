@@ -14,6 +14,8 @@ class EndpointCapacity:
     max_queue: int
     active: int = 0
     queue_size: int = 0
+    # The estimate before any job has finished (just after a restart)
+    default_latency_ms: float = 500.0
     # Rolling window of recent latencies (seconds) for wait-time estimation
     _latencies: deque = field(default_factory=lambda: deque(maxlen=20))
     # monotonic start times of the jobs holding a slot right now
@@ -30,7 +32,7 @@ class EndpointCapacity:
 
     def avg_latency_ms(self) -> float:
         if not self._latencies:
-            return 500.0  # default estimate
+            return self.default_latency_ms
         return (sum(self._latencies) / len(self._latencies)) * 1000
 
     def job_started(self, start: float) -> None:
@@ -45,8 +47,9 @@ class EndpointCapacity:
 
         With the running jobs' start times known, the wait is the time until
         the slot this request needs frees up: the jobs that have run longest
-        free theirs first. A job past the average is given a quarter of it
-        rather than none, so the estimate never reads 0 while it is still busy.
+        free theirs first. A job past the average is a long one (long texts
+        take several times the average), so it is given half of what it has
+        run so far, and never less than a quarter of the average.
         """
         avg = self.avg_latency_ms()
         slots = max(self.max_concurrent, 1)
@@ -54,7 +57,8 @@ class EndpointCapacity:
             batches = max(1, position / slots)
             return int(batches * avg)
         remaining = sorted(
-            max(avg - (now - start) * 1000, 0.25 * avg) for start in self._starts
+            max(avg - elapsed, 0.5 * elapsed, 0.25 * avg)
+            for elapsed in ((now - start) * 1000 for start in self._starts)
         )
         index = max(position, 1) - 1
         rounds, slot = divmod(index, slots)

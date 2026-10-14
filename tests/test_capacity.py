@@ -79,11 +79,14 @@ def test_wait_counts_down_with_the_running_jobs():
     assert capacity.estimated_wait_ms(3, now=120.0) == 40_000
 
 
-def test_a_job_past_the_average_still_counts_as_busy():
+def test_a_job_past_the_average_is_taken_for_a_long_one():
+    """Short texts pull the average down; a job well past it is a long text,
+    so it gets half its elapsed time, not a sliver of the average."""
     capacity = EndpointCapacity(max_concurrent=1, max_queue=6)
     capacity.record_latency(20.0)
     capacity.job_started(0.0)
-    assert capacity.estimated_wait_ms(1, now=60.0) == 5_000
+    assert capacity.estimated_wait_ms(1, now=60.0) == 30_000
+    assert capacity.estimated_wait_ms(1, now=22.0) == 11_000
 
 
 def test_finished_jobs_leave_the_estimate():

@@ -66,8 +66,13 @@ class QueueManager:
         self._capacities: dict[str, EndpointCapacity] = {
             "snippet": EndpointCapacity(max_concurrent=max_snippet, max_queue=50),
             "quick": EndpointCapacity(max_concurrent=max_quick, max_queue=50),
-            "full": EndpointCapacity(max_concurrent=max_full, max_queue=20),
-            "short": EndpointCapacity(max_concurrent=max_short, max_queue=20),
+            # Typical whole-scan times on production, until real ones come in.
+            "full": EndpointCapacity(
+                max_concurrent=max_full, max_queue=20, default_latency_ms=30_000
+            ),
+            "short": EndpointCapacity(
+                max_concurrent=max_short, max_queue=20, default_latency_ms=10_000
+            ),
         }
 
         # asyncio.PriorityQueue per endpoint

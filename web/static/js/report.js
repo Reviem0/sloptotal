@@ -46,7 +46,7 @@
         cell.textContent = v.toFixed(1);
         cell.classList.remove("st-engine__pending");
         if (details) row.title = details;
-        if (row.dataset.score === "-1") done++;
+        if (parseFloat(row.dataset.score) < 0) done++;
         row.dataset.score = v;
         sortRows();
         document.getElementById("progress").textContent = done + " / " + total;
@@ -130,6 +130,11 @@
         if (!bar || bar.dataset.band) return;
         bar.dataset.running = "";
         if (cell) cell.textContent = "Running";
+        var row = document.getElementById("row-" + key);
+        if (row && row.dataset.score === "-1") {
+            row.dataset.score = "-0.5"; // above the engines still waiting
+            sortRows();
+        }
     });
     stream.onerror = function () {
         stream.close();

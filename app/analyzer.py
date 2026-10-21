@@ -36,6 +36,7 @@ from app.database import (
     get_report as db_get_report,
 )
 from app.engine_status import mark_failed, mark_loaded
+from app.engines.base import fast_windows
 from app.engines.binoculars import BinocularsEngine
 from app.engines.burstiness import BurstinessEngine
 from app.engines.classifier_bert_raid import ClassifierBERTRaidEngine
@@ -80,6 +81,10 @@ _done_events: dict[str, asyncio.Event] = {}
 
 # report_id -> engines still to report before the overall score is final
 _scoring_left: dict[str, set[str]] = {}
+# Reports being scored in fast mode, and the cache tag their results are stored
+# under, so a full request never reuses one.
+_fast_reports: set[str] = set()
+FAST_TAG = f"{CALIBRATION_VERSION}+fast"
 
 # Lock for pending dict modifications
 _pending_lock = asyncio.Lock()
@@ -248,8 +253,9 @@ def shutdown_analyzer() -> None:
     log.info("Analyzer shutdown complete")
 
 
-def _run_engine(engine, text: str) -> EngineResult:
-    result = engine.analyze(text)
+def _run_engine(engine, text: str, fast: bool = False) -> EngineResult:
+    with fast_windows(fast):
+        result = engine.analyze(text)
     engine_key = next((key for key, candidate in _engines if candidate is engine), None)
     if engine_key is None:
         return result
@@ -301,8 +307,13 @@ async def start_analysis(
     source: str = "",
     _queue_managed: bool = False,
     lane: str = "full",
+    fast: bool = False,
 ) -> tuple[str, bool]:
     """Start analysis and return (report_id, is_cached). Results stream via queue.
+
+    fast=True scores half as many windows per classifier (see fast_windows).
+    Fast reports are cached apart from full ones, so a full request never gets
+    a fast result; a fast request is happy to reuse a full one.
 
     When _queue_managed=True the caller (QueueManager) already tracks concurrency,
     so the internal _inflight_full_count gate is skipped.
@@ -315,16 +326,17 @@ async def start_analysis(
 
     # Check cache first
     if CACHE_ENABLED:
-        cached_report = await get_report_by_hash(text_hash, CALIBRATION_VERSION)
-        if cached_report and is_cacheable_report(cached_report):
-            log.debug(f"Cache hit for hash {text_hash[:16]}...")
-            return cached_report.id, True
+        for tag in (CALIBRATION_VERSION, FAST_TAG) if fast else (CALIBRATION_VERSION,):
+            cached_report = await get_report_by_hash(text_hash, tag)
+            if cached_report and is_cacheable_report(cached_report):
+                log.debug(f"Cache hit for hash {text_hash[:16]}...")
+                return cached_report.id, True
 
         # Check if there's already a pending analysis for this text
         pending_id = await get_pending_report_by_hash(text_hash)
         if pending_id:
             async with _pending_lock:
-                if pending_id in _pending:
+                if pending_id in _pending and (fast or pending_id not in _fast_reports):
                     log.debug(f"Joining pending analysis {pending_id}")
                     return pending_id, False
 
@@ -369,16 +381,22 @@ async def start_analysis(
         _result_counts[report_id] = 0
         _done_events[report_id] = asyncio.Event()
         _scoring_left[report_id] = set(scoring_engines(text))
+        if fast:
+            _fast_reports.add(report_id)
 
-    log.info(f"Starting analysis {report_id} ({word_count} words)")
+    log.info(
+        f"Starting analysis {report_id} ({word_count} words{', fast' if fast else ''})"
+    )
 
     loop = asyncio.get_event_loop()
     for key, engine in engine_order(text):
         if key in _CHEAP_ENGINES:
-            future = loop.run_in_executor(_cheap_executor, _run_engine, engine, text)
+            future = loop.run_in_executor(
+                _cheap_executor, _run_engine, engine, text, fast
+            )
         else:
             future = loop.run_in_executor(
-                _executors[lane], _run_announced, engine, text, key, loop, queue
+                _executors[lane], _run_announced, engine, text, key, loop, queue, fast
             )
         future.add_done_callback(
             lambda f, k=key, q=queue, rid=report_id: _on_engine_done(f, k, q, rid)
@@ -387,12 +405,14 @@ async def start_analysis(
     return report_id, False
 
 
-def _run_announced(engine, text: str, key: str, loop, queue: asyncio.Queue):
+def _run_announced(
+    engine, text: str, key: str, loop, queue: asyncio.Queue, fast: bool = False
+):
     """Run a model engine, first telling the stream it has started: under load
     a model can wait its turn for a while, and the report shows which ones are
     running meanwhile. A start is (key, None, False, None) on the queue."""
     loop.call_soon_threadsafe(queue.put_nowait, (key, None, False, None))
-    return _run_engine(engine, text)
+    return _run_engine(engine, text, fast)
 
 
 def _on_engine_done(future, key: str, queue: asyncio.Queue, report_id: str):
@@ -458,6 +478,7 @@ async def _finish_analysis(report_id: str) -> None:
         _pending.pop(report_id, None)
         _result_counts.pop(report_id, None)
         _scoring_left.pop(report_id, None)
+        _fast_reports.discard(report_id)
         done = _done_events.pop(report_id, None)
 
     async with _inflight_full_lock:
@@ -527,8 +548,9 @@ def _update_report_score_sync(report_id: str) -> tuple[float, float]:
     overall_verdict = score_to_verdict_str(overall_score)
     engines_flagged = sum(1 for score in score_map.values() if score >= 0.4)
 
+    tag = FAST_TAG if report_id in _fast_reports else CALIBRATION_VERSION
     update_report_score_sync(
-        report_id, overall_score, overall_verdict, engines_flagged, CALIBRATION_VERSION
+        report_id, overall_score, overall_verdict, engines_flagged, tag
     )
     return score_range(score_map, text)
 

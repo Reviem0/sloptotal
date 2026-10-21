@@ -134,6 +134,9 @@ def score_to_engine_verdict(score: float) -> Verdict:
 class WebAnalyzeRequest(BaseModel):
     url: str = ""
     text: str = ""
+    # Half as many windows per classifier on long texts: faster, a little less
+    # accurate on texts that change partway through. Off unless asked for.
+    fast: bool = False
 
     model_config = {
         "json_schema_extra": {

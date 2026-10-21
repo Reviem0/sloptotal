@@ -11,6 +11,8 @@
   <a href="https://sloptotal.com"><img src="https://img.shields.io/badge/live%20demo-sloptotal.com-b5282e" alt="Live demo"></a>
 </p>
 
+<p align="center"><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ru.md">Русский</a></p>
+
 # SlopTotal
 
 **VirusTotal for AI-generated text.** Paste text, drop in a PDF or Word file, or

@@ -26,7 +26,7 @@ from app.analyzer import (
     get_engine_list,
     shutdown_analyzer,
 )
-from app.config import STATIC_DIR, TEMPLATES_DIR
+from app.config import FIRST_PARTY_ORIGINS, STATIC_DIR, TEMPLATES_DIR
 from app.database import (
     REPORT_RETENTION_DAYS,
     check_database_health,
@@ -34,6 +34,7 @@ from app.database import (
     purge_expired_reports,
     purge_invalid_cached_reports,
 )
+from app.direct_quota import DirectQuotaMiddleware
 from app.engine_status import get_health_summary, mark_failed, mark_loaded
 from app.queue_manager import QueueManager
 from app.routes.api import router as api_router
@@ -93,10 +94,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^(chrome-extension://.*|http://localhost(:\d+)?|https://sloptotal\.com|https://pablocaeg\.github\.io)$",
+    allow_origin_regex=FIRST_PARTY_ORIGINS,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+app.add_middleware(DirectQuotaMiddleware)
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))

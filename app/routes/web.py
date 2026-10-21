@@ -165,13 +165,14 @@ async def api_web_analyze(request: Request, req: WebAnalyzeRequest):
 
         if not queue_manager:
             report_id, is_cached = await start_analysis(
-                content, source_type=source_type, source=source
+                content, source_type=source_type, source=source, fast=req.fast
             )
             return {"status": "started", "report_id": report_id}
 
         from app.cache import compute_text_hash
 
-        text_hash = compute_text_hash(content)
+        # Fast and full requests for the same text must not share a ticket.
+        text_hash = compute_text_hash(content) + (":fast" if req.fast else "")
 
         async def _execute(payload):
             rid, cached = await start_analysis(
@@ -180,6 +181,7 @@ async def api_web_analyze(request: Request, req: WebAnalyzeRequest):
                 source=payload["source"],
                 _queue_managed=True,
                 lane=payload["lane"],
+                fast=payload["fast"],
             )
             if cached:
                 return {"report_id": rid}
@@ -193,6 +195,7 @@ async def api_web_analyze(request: Request, req: WebAnalyzeRequest):
                 "source_type": source_type,
                 "source": source,
                 "lane": lane,
+                "fast": req.fast,
             },
             text_hash,
             _execute,

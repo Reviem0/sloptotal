@@ -7,6 +7,7 @@ from transformers import (
     PreTrainedModel,
 )
 
+from app.autoconfig import get_device
 from app.engines.base import (
     LARGE_MODEL_MAX_WINDOWS,
     BaseEngine,
@@ -76,7 +77,7 @@ def _load_model():
                 model = _SuperAnnotateDetector.from_pretrained(
                     _MODEL_NAME, config=config
                 )
-                model.eval()
+                model.eval().to(get_device())
                 # Publish the model last: readers test it, so the tokenizer must
                 # already be set and the model already in eval mode when they see it.
                 _model = model
@@ -84,7 +85,9 @@ def _load_model():
 
 
 def _score_chunk(text: str, model, tokenizer) -> float:
+    device = next(model.parameters()).device
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
         logits = model(
             input_ids=inputs["input_ids"],

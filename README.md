@@ -281,6 +281,22 @@ can be overridden with environment variables; see [`.env.example`](.env.example)
 
 What each engine costs in memory and time, measured on one machine, is in [docs/MODELS.md](docs/MODELS.md).
 
+**NVIDIA GPU:** `requirements.txt` installs the CPU-only torch wheel. To run the
+models on the GPU, replace it with a CUDA build of the same torch version (keep
+the version: upgrading torch can move scores):
+
+```bash
+pip uninstall -y torch
+pip install torch==<installed version> --index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://pypi.org/simple
+python -c "import torch; print(torch.cuda.is_available())"   # True
+```
+
+`cu130` needs an NVIDIA driver with CUDA 13 support and covers RTX 20xx through
+50xx; pick another index from [pytorch.org](https://pytorch.org/get-started/locally/)
+for older cards. With CUDA and at least 4 GB of VRAM, startup selects the
+`performance` profile and the banner shows `Device: cuda`. All models run in
+fp32, so scores match the CPU to three decimals.
+
 **High-RAM CPU servers (e.g. 64 GB, no GPU):** you automatically get the `performance` profile. With no CUDA, all inference stays on CPU but you can run more concurrent workers and model pool replicas:
 
 ```bash

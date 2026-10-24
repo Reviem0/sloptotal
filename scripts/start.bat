@@ -20,7 +20,7 @@ if not defined HOST set "HOST=0.0.0.0"
 
 echo.
 echo   Starting SlopTotal...
-echo   Models will be downloaded on first run (~2GB).
+echo   Models will be downloaded on first run (~9 GB, see docs/MODELS.md).
 echo.
 
 REM Detect if running inside venv; if not, try to activate one
